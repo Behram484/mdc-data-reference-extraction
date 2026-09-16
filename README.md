@@ -38,9 +38,12 @@ help.
 | S5 | + LLM verification of ambiguous mentions | 0.5894 | 0.5477 | 0.5678 | **−0.0714** | 0.6465 |
 | S6 | + PDF fallback | _pending_ | | | | |
 
-**S5 made things worse and is not in the shipped pipeline.** The best
-configuration remains S4 at F1 0.6392. The row is kept because a measured
-negative result is the point of this table.
+**S5 made things worse and is not in the shipped pipeline.** The shipped
+configuration is S4. The row is kept because a measured negative result is the
+point of this table.
+
+All figures above are the `dev` tuning split. The honest number is the holdout
+one below, and it is much lower — see [Holdout](#holdout--the-honest-number).
 
 **Mention F1** scores `(article_id, dataset_id)` with the type dropped. S1–S3
 are purely about *finding* citations and emit a constant type, so their headline
@@ -491,6 +494,111 @@ Verification fails **open** by design: an unreachable model, a timeout or an
 unparseable reply keeps the mention. A verifier outage costs precision, never
 recall.
 
+
+## Holdout — the honest number
+
+Every choice in S1–S5 was made on `dev`. `holdout` was untouched until the end
+and scored once. Both are reported with 95% intervals from resampling
+**articles**, because citations inside one paper are not independent
+observations:
+
+| Split | articles (citing) | gold | F1 | 95% interval | Mention F1 |
+|---|---|---|---|---|---|
+| dev (tuned on) | 418 (171) | 566 | 0.6392 | 0.53 – 0.73 | 0.7117 |
+| **holdout (scored once)** | 105 (43) | 153 | **0.2847** | 0.12 – 0.50 | 0.5833 |
+
+Per stage on holdout: S0 0.0000 · S1 0.0574 · S2 0.1384 · S3 0.2431 · S4 0.2847.
+The ordering of the stages survives; the level does not.
+
+That is a large drop and it is not noise — the intervals do not overlap. Three
+things cause it, and two of them were predicted in writing before holdout was
+opened.
+
+### 1. A fifth of holdout is unreachable by design (33 of 153)
+
+S2 excluded `empiar` and `hpa` because all of their gold citations had landed
+in holdout, so dev could not justify them; S2 also dropped `uniprot`,
+`genbank` and `refseq` for costing more than they returned on dev. The bill
+comes due here:
+
+| Why a gold mention was missed | count | share |
+|---|---|---|
+| found | 84 | 54.9% |
+| pattern excluded — `empiar` | 12 | 7.8% |
+| pattern excluded — `uniprot` / `genbank` | 12 | 7.8% |
+| pattern excluded — `hpa` | 9 | 5.9% |
+| article has no XML (S6 territory) | 15 | 9.8% |
+| identifier absent from the XML | 12 | 7.8% |
+| DOI prefix not in the allowlist | 6 | 3.9% |
+| no pattern covers it at all | 2 | 1.3% |
+
+Extraction found 84 of 153. Including `empiar` and `hpa` would have recovered
+21 of them — and would have been exactly the contamination that makes this
+number meaningless. The cost of that discipline is visible and was worth
+paying.
+
+### 2. One article inverts the type rule
+
+Of the 84 correctly-extracted mentions, only 41 carry the right type — 48.8%,
+against 89.8% on dev. Almost all of the damage is a single paper:
+
+| Article | gold | Primary | Secondary | ids |
+|---|---|---|---|---|
+| `10.7717_peerj.10452` | 25 | **24** | 1 | all accessions |
+| `10.1111_cas.12935` | 23 | 0 | 23 | all accessions |
+| `10.1038_s41598-020-59839-x` | 20 | 0 | 20 | all accessions |
+| `10.3133_cir1497` | 18 | 0 | 18 | all DOIs |
+
+The format prior says accession → Secondary, which holds for 95% of dev. The
+first article is 24 out of 25 the other way, on its own accounting for more
+than half of holdout's type errors. On holdout the rules rank as:
+
+| Rule | dev | holdout |
+|---|---|---|
+| always Secondary | 67.6% | 53.6% |
+| format prior | 86.1% | **41.7%** |
+| format + location | 88.9% | 53.6% |
+| + repository prefix (S4) | 89.8% | 48.8% |
+
+On holdout the format prior is *worse than a constant*. A rule fitted on 122
+articles did not survive 23.
+
+### 3. The effective sample size is articles, not mentions
+
+Holdout has 153 gold mentions but only 43 citing articles, and four of them
+hold 86 of the 153. Scoring 153 mentions looks like a reasonable sample; it is
+really about 43 observations, four of which dominate. Hence the 0.38-wide
+interval, and hence `scripts/bootstrap_ci.py` resampling articles rather than
+rows.
+
+This is the same mistake as a row-level train/test split (S0) and as ungrouped
+n-gram folds (S4), appearing a third time — now in the confidence interval
+rather than in the model.
+
+### What this says about the 2025 result
+
+The team I captained in 2025 scored 0.7058 public and 0.5797 private, a drop of
+0.13. Nothing here beats that, and the numbers are not comparable — different
+split, different articles, a local dev set against a Kaggle leaderboard. But
+the mechanism behind that drop is now measured rather than guessed: with a few
+dozen citing articles per split and a handful of them dominating, a score is
+worth about ±0.1, and a rule that fits one set of papers can invert on the next.
+
+### If this were continued
+
+The measured leads, in order of evidence:
+
+1. **Recall, not precision.** 45% of holdout gold is never extracted; 33 of
+   those are patterns excluded on thin dev evidence. Re-selecting patterns on
+   dev+holdout combined — accepting that a fresh split is then needed — is
+   worth more than any further filtering.
+2. **The type rule needs a per-article signal.** Types are near-constant
+   within an article (three of the four dominant holdout papers are 100% one
+   type). A rule that decides *per article* rather than per mention would fit
+   the structure of the data instead of fighting it.
+3. **S6, PDF fallback**, for the 15 holdout mentions and ~24% of the corpus
+   with no XML.
+
 ## Evaluation
 
 Micro-averaged F1 over exact `(article_id, dataset_id, type)` triples, matching
@@ -552,6 +660,7 @@ scripts/eval_patterns.py  per-pattern cost/benefit and the cumulative sweep
 scripts/build_allowlist.py learn the DOI prefix allowlist from dev
 scripts/build_prefix_types.py learn the majority type per repository
 scripts/verify_mentions.py S5: LLM verification of ambiguous mentions
+scripts/bootstrap_ci.py   article-level confidence intervals
 models/                   learned parameters, committed for reproducibility
 scripts/score.py          score a prediction CSV against a split
 tests/test_pipeline.py    end-to-end check on a synthetic fixture
