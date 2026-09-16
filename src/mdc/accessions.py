@@ -128,6 +128,17 @@ def find_accessions(text: str, patterns: tuple[Pattern, ...] = SELECTED) -> set[
     return out
 
 
+def find_accessions_with_spans(
+    text: str, patterns: tuple[Pattern, ...] = SELECTED
+) -> list[tuple[str, int, int]]:
+    """Every accession as (id, start, end) offsets into ``text``."""
+    out: list[tuple[str, int, int]] = []
+    for pattern in patterns:
+        for match in pattern.regex.finditer(text):
+            out.append((match.group(0), match.start(), match.end()))
+    return out
+
+
 def find_by_pattern(
     text: str, patterns: tuple[Pattern, ...] = ALL
 ) -> dict[str, set[str]]:

@@ -33,8 +33,8 @@ help.
 | S0 | Empty baseline (pipeline check) | 0.0000 | 0.0000 | 0.0000 | — | 0.0000 |
 | S1 | XML parsing + DOI regex | 0.1201 | 0.1802 | **0.1442** | +0.1442 | 0.1583 |
 | S2 | + accession ID patterns | 0.2752 | 0.6131 | **0.3799** | +0.2357 | 0.4050 |
-| S3 | + repository prefix filter, reference mining | 0.5759 | 0.6572 | **0.6139** | +0.2340 | 0.7129 |
-| S4 | + Primary/Secondary rules | _pending_ | | | | |
+| S3 | + repository prefix filter, reference mining | 0.5741 | 0.6572 | **0.6129** | +0.2330 | 0.7117 |
+| S4 | + Primary/Secondary rules | 0.5988 | 0.6855 | **0.6392** | +0.0263 | 0.7117 |
 | S5 | + LLM on ambiguous cases only | _pending_ | | | | |
 | S6 | + PDF fallback | _pending_ | | | | |
 
@@ -329,7 +329,7 @@ them. With the prefix filter in place the same read becomes cheap:
 |---|---|---|
 | S2 | 0.3799 | 0.4050 |
 | S3, allowlist only | 0.6191 | 0.6601 |
-| **S3, allowlist + reference mining** | **0.6139** | **0.7129** |
+| **S3, allowlist + reference mining** | **0.6129** | **0.7117** |
 
 Reference mining raises extraction sharply (+0.053 mention F1) while *lowering*
 the headline F1 by 0.005. That is not a contradiction — it is a typing failure.
@@ -347,6 +347,76 @@ extraction gain is real. Fixing the label is S4's, and location is now a
 measured signal rather than a guess. The shift is already visible in the error
 mix: wrong-type errors were 23 of 914 false positives at S2, and are 60 of 274
 now.
+
+
+## S4 — Primary vs Secondary
+
+S3 left type errors as 60 of 274 false positives. This stage classifies, and
+the mention-level F1 is unchanged by design (0.7117 before and after) — S4
+moves labels, not extraction.
+
+Accuracy is measured on the 432 correctly-extracted dev mentions, so it
+reflects the classifier alone rather than the extractor's mistakes:
+
+| Rule | Accuracy |
+|---|---|
+| always Secondary (majority class) | 67.6% |
+| format prior — DOI→Primary, accession→Secondary (S2/S3) | 86.1% |
+| format + location | 88.9% |
+| **+ learned repository prefix** | **89.4%** |
+
+### Where the signal actually is
+
+Two features do all the work, and a cross-tab shows why — only one cell of four
+is genuinely uncertain:
+
+| Location | Format | Primary | Secondary | majority |
+|---|---|---|---|---|
+| main + bibliography | DOI | 53 | 3 | Primary (95%) |
+| main only | DOI | 49 | 7 | Primary (88%) |
+| main only | accession | 13 | 245 | Secondary (95%) |
+| **bibliography only** | **DOI** | **25** | **37** | **Secondary (60%)** |
+
+A repository's own habits then override where they are known: Dryad is 65–0
+Primary in dev, ICPSR 0–18 Secondary, GBIF 10–24 Secondary. Eleven prefixes
+clear the ≥5-citation support threshold; they live in
+[`models/doi_prefix_types.txt`](models/doi_prefix_types.txt), learned from dev.
+
+### Context keywords do not work here
+
+This stage was planned around a keyword lexicon. Measured against dev contexts,
+most of it simply is not in the text, and two of the phrases point the wrong
+way:
+
+| Phrase | expected | hits | actual Primary rate |
+|---|---|---|---|
+| "data generated for this study" | Primary | **0** | — |
+| "we deposited" | Primary | **0** | — |
+| "were generated" | Primary | **0** | — |
+| "previously published" | Secondary | **0** | — |
+| "reused" | Secondary | **0** | — |
+| "obtained from" | Secondary | 1 | — |
+| "downloaded from" | Secondary | 6 | 50% (no signal) |
+| "publicly available" | Secondary | 7 | **86% Primary** |
+| "available from" | Secondary | 37 | **70% Primary** |
+
+The best cue-based variant was worth +0.15pp against a seed-to-seed standard
+deviation of 0.5–0.7pp — noise — and most variants made the rule worse. No
+keyword rule ships.
+
+### A trap worth naming
+
+Mining n-grams for discriminative power initially produced beautiful-looking
+predictors: `duck egypt`, `flagellar`, `cell lines`, all at 0% Primary with
+n≈26. They are not language, they are **article identity**. One paper
+contributes dozens of mentions sharing the same surrounding text, so ungrouped
+folds let a rule recognise the article and score far above what it would earn
+on a new one.
+
+Every number in this section therefore comes from **article-grouped** 5-fold
+cross-validation inside dev, repeated across seeds. It is the same reason the
+dev/holdout split is by article (S0) — the mistake simply reappears one level
+down.
 
 ## Evaluation
 
@@ -395,6 +465,8 @@ src/mdc/xmltext.py    schema-agnostic XML text, split main vs references
 src/mdc/dois.py       DOI regex, normalisation, self-citation removal
 src/mdc/accessions.py repository accession patterns + the selected set
 src/mdc/repositories.py DOI prefix allowlist: which registrants are data
+src/mdc/context.py    per-mention evidence: location + surrounding text
+src/mdc/classify.py   the Primary/Secondary rule
 src/mdc/pipeline.py   article -> predicted ids, shared by every stage
 src/mdc/evaluate.py   precision / recall / F1, error breakdowns, I/O
 src/mdc/split.py      article-level dev / holdout split
@@ -404,12 +476,14 @@ scripts/predict_empty.py  the null baseline
 scripts/predict.py        rule-based prediction; stages are its configurations
 scripts/eval_patterns.py  per-pattern cost/benefit and the cumulative sweep
 scripts/build_allowlist.py learn the DOI prefix allowlist from dev
+scripts/build_prefix_types.py learn the majority type per repository
 models/                   learned parameters, committed for reproducibility
 scripts/score.py          score a prediction CSV against a split
 tests/test_pipeline.py    end-to-end check on a synthetic fixture
 tests/test_extraction.py  DOI normalisation and XML parsing units
 tests/test_accessions.py  accession patterns and the format prior
 tests/test_repositories.py the DOI prefix allowlist
+tests/test_classify.py    evidence collection and the type rule
 splits/                   committed dev / holdout article-id lists
 reports/scores.jsonl      one line per scored run
 ```

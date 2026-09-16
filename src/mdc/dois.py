@@ -72,11 +72,22 @@ def normalize_doi(raw: str) -> str | None:
 
 def find_dois(text: str) -> set[str]:
     """Every normalised DOI in a block of text."""
-    out: set[str] = set()
+    return {doi for doi, _, _ in find_dois_with_spans(text)}
+
+
+def find_dois_with_spans(text: str) -> list[tuple[str, int, int]]:
+    """Every DOI as (normalised id, start, end) offsets into ``text``.
+
+    The offsets are what makes context extraction possible: the normalised form
+    rarely appears verbatim in the document ("doi:10.5061/DRYAD.X" becomes
+    "https://doi.org/10.5061/dryad.x"), so a later search for the id would miss
+    its own mention.
+    """
+    out: list[tuple[str, int, int]] = []
     for match in DOI_RE.finditer(text):
         doi = normalize_doi(match.group(0))
         if doi:
-            out.add(doi)
+            out.append((doi, match.start(), match.end()))
     return out
 
 

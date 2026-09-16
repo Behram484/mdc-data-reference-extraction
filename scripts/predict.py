@@ -21,6 +21,8 @@ import _paths  # noqa: F401
 from mdc.accessions import resolve
 from mdc.data import all_labelled_articles, discover_articles, load_labels
 from mdc.evaluate import write_predictions
+from mdc.classify import classify, format_location_type, load_prefix_types
+from mdc.context import collect_evidence
 from mdc.pipeline import PRIMARY, extract_ids, format_prior_type
 from mdc.split import read_split
 from mdc.xmltext import MAIN
@@ -33,7 +35,12 @@ def main() -> int:
     ap.add_argument("--split", default="")
     ap.add_argument("--patterns", default="selected")
     ap.add_argument("--sections", default=MAIN)
-    ap.add_argument("--type-rule", default="format", choices=["format", "constant"])
+    ap.add_argument(
+        "--type-rule",
+        default="evidence",
+        choices=["evidence", "format_location", "format", "constant"],
+        help="evidence = location + repository prefix (S4); format = the S2/S3 prior",
+    )
     ap.add_argument("--constant-type", default=PRIMARY)
     ap.add_argument("--keep-self-doi", action="store_true")
     ap.add_argument("--no-prefix-filter", action="store_true",
@@ -52,6 +59,9 @@ def main() -> int:
         articles &= read_split(args.split)
     xml = discover_articles(root / "train" / "XML", "xml")
 
+    uses_evidence = args.type_rule in ("evidence", "format_location")
+    prefix_types = load_prefix_types() if args.type_rule == "evidence" else {}
+
     triples: set[tuple[str, str, str]] = set()
     n_xml = 0
     for article_id in sorted(articles):
@@ -59,6 +69,24 @@ def main() -> int:
         if path is None:
             continue
         n_xml += 1
+
+        if uses_evidence:
+            evidence = collect_evidence(
+                path,
+                article_id,
+                patterns,
+                filter_doi_prefix=not args.no_prefix_filter,
+                read_references=args.read_references,
+            )
+            for dataset_id, ev in evidence.items():
+                ty = (
+                    classify(ev, prefix_types)
+                    if args.type_rule == "evidence"
+                    else format_location_type(ev)
+                )
+                triples.add((article_id, dataset_id, ty))
+            continue
+
         for dataset_id in extract_ids(
             path,
             article_id,

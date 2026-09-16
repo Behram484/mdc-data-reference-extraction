@@ -41,21 +41,25 @@ def extract_ids(
     prefixes it yields 62 true and 29 false. Data citations formatted as
     bibliography entries are common enough to be worth reaching for -- but only
     through that filter.
+
+    Delegates to collect_evidence so the two entry points cannot drift: they
+    previously disagreed about whether accession IDs are scanned in the
+    bibliography, which silently changed the prediction set depending on which
+    one the caller used.
     """
-    segments = parse_segments(path)
-    text = section_text(segments, sections or {MAIN})
+    from mdc.context import collect_evidence
 
-    dois = find_dois(text)
-    if read_references:
-        dois |= find_dois(section_text(segments, {REFERENCES}))
-    if exclude_self:
-        self_dois = self_doi_candidates(path) | {article_id_to_doi(article_id)}
-        dois = drop_self_citations(dois, self_dois)
-    if filter_doi_prefix:
-        allowed = allowed_prefixes()
-        dois = {d for d in dois if is_data_doi(d, allowed)}
-
-    return dois | find_accessions(text, patterns)
+    return set(
+        collect_evidence(
+            path,
+            article_id,
+            patterns=patterns,
+            filter_doi_prefix=filter_doi_prefix,
+            read_references=read_references,
+            exclude_self=exclude_self,
+            sections=sections,
+        )
+    )
 
 
 def format_prior_type(dataset_id: str) -> str:
