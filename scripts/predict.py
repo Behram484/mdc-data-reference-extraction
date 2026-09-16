@@ -45,6 +45,8 @@ def main() -> int:
     ap.add_argument("--keep-self-doi", action="store_true")
     ap.add_argument("--no-prefix-filter", action="store_true",
                     help="ablation: keep DOIs from any registrant, not just data repositories")
+    ap.add_argument("--pdf-fallback", action="store_true",
+                    help="S6: also read articles that have only a PDF")
     ap.add_argument("--read-references", action="store_true",
                     help="also mine the bibliography (only safe with the prefix filter on)")
     args = ap.parse_args()
@@ -58,17 +60,24 @@ def main() -> int:
     if args.split:
         articles &= read_split(args.split)
     xml = discover_articles(root / "train" / "XML", "xml")
+    sources: dict[str, Path] = dict(xml)
+    if args.pdf_fallback:
+        # PDF only where there is no XML: XML is structured and strictly better
+        for article_id, path in discover_articles(root / "train" / "PDF", "pdf").items():
+            sources.setdefault(article_id, path)
 
     uses_evidence = args.type_rule in ("evidence", "format_location")
     prefix_types = load_prefix_types() if args.type_rule == "evidence" else {}
 
     triples: set[tuple[str, str, str]] = set()
-    n_xml = 0
+    n_xml = n_pdf = 0
     for article_id in sorted(articles):
-        path = xml.get(article_id)
+        path = sources.get(article_id)
         if path is None:
             continue
         n_xml += 1
+        if path.suffix.lower() == ".pdf":
+            n_pdf += 1
 
         if uses_evidence:
             evidence = collect_evidence(
@@ -104,7 +113,8 @@ def main() -> int:
             triples.add((article_id, dataset_id, ty))
 
     write_predictions(args.out, triples)
-    print(f"articles {len(articles)} ({n_xml} with XML) | sections {sorted(sections)}")
+    print(f"articles {len(articles)} ({n_xml} readable, {n_pdf} of them PDF-only) "
+          f"| sections {sorted(sections)}")
     print(f"patterns {len(patterns)}: {[p.name for p in patterns] or 'none (DOI only)'}")
     print(f"type rule {args.type_rule} | prefix filter "
           f"{'off' if args.no_prefix_filter else 'on'} | references "

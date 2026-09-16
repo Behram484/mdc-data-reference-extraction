@@ -17,13 +17,8 @@ from pathlib import Path
 from mdc.accessions import SELECTED, Pattern, find_accessions_with_spans
 from mdc.dois import article_id_to_doi, drop_self_citations, find_dois_with_spans
 from mdc.repositories import allowed_prefixes, is_data_doi
-from mdc.xmltext import (
-    MAIN,
-    REFERENCES,
-    parse_segments,
-    section_text,
-    self_doi_candidates,
-)
+from mdc.document import parse_segments, self_doi_candidates
+from mdc.xmltext import MAIN, REFERENCES, section_text
 
 WINDOW = 250
 

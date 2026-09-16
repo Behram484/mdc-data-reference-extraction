@@ -36,7 +36,7 @@ help.
 | S3 | + repository prefix filter, reference mining | 0.5741 | 0.6572 | **0.6129** | +0.2330 | 0.7117 |
 | S4 | + Primary/Secondary rules | 0.5988 | 0.6855 | **0.6392** | +0.0263 | 0.7117 |
 | S5 | + LLM verification of ambiguous mentions | 0.5894 | 0.5477 | 0.5678 | **−0.0714** | 0.6465 |
-| S6 | + PDF fallback | _pending_ | | | | |
+| S6 | + PDF fallback (opt-in) | 0.5747 | 0.7473 | 0.6498 | +0.0106 | 0.7174 |
 
 **S5 made things worse and is not in the shipped pipeline.** The shipped
 configuration is S4. The row is kept because a measured negative result is the
@@ -507,6 +507,9 @@ observations:
 | dev (tuned on) | 418 (171) | 566 | 0.6392 | 0.53 – 0.73 | 0.7117 |
 | **holdout (scored once)** | 105 (43) | 153 | **0.2847** | 0.12 – 0.50 | 0.5833 |
 
+S6 was measured afterwards and scored holdout a second time: F1 0.2794
+[0.13 – 0.47]. See [S6](#s6--pdf-fallback-within-noise).
+
 Per stage on holdout: S0 0.0000 · S1 0.0574 · S2 0.1384 · S3 0.2431 · S4 0.2847.
 The ordering of the stages survives; the level does not.
 
@@ -596,8 +599,67 @@ The measured leads, in order of evidence:
    within an article (three of the four dominant holdout papers are 100% one
    type). A rule that decides *per article* rather than per mention would fit
    the structure of the data instead of fighting it.
-3. **S6, PDF fallback**, for the 15 holdout mentions and ~24% of the corpus
-   with no XML.
+3. ~~S6, PDF fallback~~ — done, and the result is within noise. Better PDF
+   text extraction (PyMuPDF rather than pypdf) would be the next thing to try
+   there, since 39.8% precision on PDF-derived predictions suggests extraction
+   quality, not the idea, is the limit.
+
+
+## S6 — PDF fallback (within noise)
+
+24% of the corpus has no XML — 124 of 523 labelled articles, holding 59 of dev's
+566 gold mentions and 15 of holdout's 153. `src/mdc/pdftext.py` reads those
+through pypdf and returns the **same `Segment` contract as the XML backend**, so
+nothing downstream knows which format an article arrived in. The dispatcher is
+`src/mdc/document.py`; `--pdf-fallback` turns it on and PDFs are used only where
+no XML exists.
+
+Two things the PDF backend has to get right, both tested:
+
+**Splitting off the bibliography.** S3 established that reading a reference list
+costs 11,775 false positives for 47 true mentions. A PDF has no structure to
+read that from, so the split is heuristic: the *last* line that is nothing but a
+references heading — last, not first, because the word appears in running text
+and in tables of contents.
+
+**Rejoining wrapped identifiers.** PDF line wrapping cuts DOIs in half, and
+`10.5061/dry` + `ad.abc` is not a DOI. Only runs already starting with a DOI
+prefix are rejoined, so prose is untouched.
+
+### Result
+
+| | dev F1 | dev mention F1 | holdout F1 | holdout mention F1 |
+|---|---|---|---|---|
+| S4 | 0.6392 | 0.7117 | 0.2847 | 0.5833 |
+| **S6** | **0.6498** | 0.7174 | **0.2794** | 0.5524 |
+| Δ | +0.0106 | +0.0057 | **−0.0053** | −0.0309 |
+
+**It helps on dev and hurts on holdout, and both deltas are an order of
+magnitude smaller than the ±0.10 and ±0.35 confidence intervals. This cannot be
+distinguished from zero.**
+
+What it actually did: on dev the fallback added 88 predictions, 35 of them
+correct — 39.8% precision, reaching 59.3% of the gold that sits in PDF-only
+articles, with the type right on all 35. On holdout the same code added 3 true
+mentions and 24 false ones. 33 PDF articles holding 15 gold citations is not
+enough to tell a real effect from a coin flip.
+
+So `--pdf-fallback` stays **opt-in and off by default**. The structural argument
+for it is sound — a quarter of the corpus is otherwise unreadable — but the
+measurement does not support claiming a gain, and the table should not imply one.
+
+pypdf is an optional dependency for this reason: the XML path, 76% of the
+corpus and every stage through S5, runs without it. The test suite passes in
+both environments (one PDF-specific test skips when pypdf is absent).
+
+### A note on holdout discipline
+
+Holdout has now been opened **twice**: once after S5, once for S6. Every design
+decision in S6 — the heading heuristic, the dewrap rule, reading PDFs only where
+XML is missing — was made and measured on dev, and nothing was changed after
+either holdout run. The first holdout result stands unedited above. Two
+scorings is worse than one, and the second is recorded here rather than quietly
+folded into the first.
 
 ## Evaluation
 
@@ -649,6 +711,8 @@ src/mdc/repositories.py DOI prefix allowlist: which registrants are data
 src/mdc/context.py    per-mention evidence: location + surrounding text
 src/mdc/classify.py   the Primary/Secondary rule
 src/mdc/verify.py     LLM verification client, prompts, decision cache
+src/mdc/pdftext.py    PDF backend, same Segment contract as xmltext
+src/mdc/document.py   picks the backend by file extension
 src/mdc/pipeline.py   article -> predicted ids, shared by every stage
 src/mdc/evaluate.py   precision / recall / F1, error breakdowns, I/O
 src/mdc/split.py      article-level dev / holdout split
@@ -669,12 +733,14 @@ tests/test_accessions.py  accession patterns and the format prior
 tests/test_repositories.py the DOI prefix allowlist
 tests/test_classify.py    evidence collection and the type rule
 tests/test_verify.py      reply parsing, caching, fail-open policy
+tests/test_pdftext.py     section heuristic, dewrapping, dispatch
 splits/                   committed dev / holdout article-id lists
 reports/scores.jsonl      one line per scored run
 ```
 
-Python 3.12, standard library only so far. No dependencies are added until a
-stage actually needs one.
+Python 3.12. Standard library only through S5; S6 adds `pypdf` as an
+**optional** dependency (`pip install -r requirements.txt`). Everything except
+the PDF fallback runs without it.
 
 ## Data setup
 
