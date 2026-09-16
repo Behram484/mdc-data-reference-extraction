@@ -33,7 +33,7 @@ help.
 | S0 | Empty baseline (pipeline check) | 0.0000 | 0.0000 | 0.0000 | — | 0.0000 |
 | S1 | XML parsing + DOI regex | 0.1201 | 0.1802 | **0.1442** | +0.1442 | 0.1583 |
 | S2 | + accession ID patterns | 0.2752 | 0.6131 | **0.3799** | +0.2357 | 0.4050 |
-| S3 | + normalisation and dedup | _pending_ | | | | |
+| S3 | + repository prefix filter, reference mining | 0.5759 | 0.6572 | **0.6139** | +0.2340 | 0.7129 |
 | S4 | + Primary/Secondary rules | _pending_ | | | | |
 | S5 | + LLM on ambiguous cases only | _pending_ | | | | |
 | S6 | + PDF fallback | _pending_ | | | | |
@@ -249,6 +249,105 @@ Type errors are now a rounding error in the total: of 914 false positives, only
 23 are a mention found with the wrong type. The other 891 are spurious mentions.
 **Precision, not classification, is what S3 has to fix.**
 
+
+## S3 — Cutting false positives
+
+S2 left 891 false mentions against 370 true ones. Their composition decided
+what to build:
+
+| | count | share |
+|---|---|---|
+| DOIs | 737 | 83% |
+| accession IDs | 154 | 17% |
+
+and the DOIs were overwhelmingly *valid DOIs that are not data*:
+
+| prefix | false positives | gold | what it is |
+|---|---|---|---|
+| `10.13039` | 221 | 0 | Crossref Funder Registry |
+| `10.1371` | 123 | 0 | PLOS |
+| `10.1107` | 79 | 0 | IUCr |
+| `10.7554` | 51 | 0 | eLife |
+| `10.1111` · `10.1002` | 87 | 0 | Wiley |
+
+Publisher and funder DOIs outnumbered real data citations three to one.
+
+### Normalisation and dedup contributed nothing — and that is the finding
+
+The stage was planned as "normalise, dedup, cut false positives". The first two
+turned out to be already done: dedup is structural (predictions are a set of
+triples, so a repeated mention cannot double-count) and DOI normalisation
+landed in S1. Auditing every false positive that was a near-variant of a gold
+id in the same article returned 47 candidates, and all 47 were genuinely
+*different* identifiers — `K02406` against gold `K02407`, `10.17882/47142`
+against gold `10.17882/49388`. There was no normalisation bug left to fix, so
+S3's gain comes entirely from prefix filtering and reference mining.
+
+### Choosing the filter honestly
+
+Allowlisting the DOI prefixes seen in dev gold removes 706 of 737 false DOIs
+while keeping all 252 true ones — but that number is fitted to dev and would
+flatter a repository list that has simply memorised the split. To estimate what
+it is worth on *unseen* articles, the rule is refit inside dev: build the list
+on one half, score on the other, 2 folds × 5 seeds.
+
+| Rule | Precision | Recall | Mention F1 |
+|---|---|---|---|
+| no filter (S2) | 0.2934 | 0.6537 | 0.4050 |
+| blocklist publisher prefixes | 0.5282 | 0.6527 | 0.5838 |
+| hybrid allow-or-not-blocked | 0.5282 | 0.6527 | 0.5838 |
+| **allowlist data repositories** | 0.6600 | 0.6152 | **0.6368** |
+| allowlist + a-priori repositories | 0.6641 | 0.6385 | **0.6511** |
+
+An unseen repository prefix costs about 24% of DOI recall — the honest price of
+the allowlist, and still far cheaper than the precision it buys. Adding
+twenty well-known data-repository prefixes from domain knowledge (not from the
+labels) recovers part of that, worth +0.014 cross-validated.
+
+The learned half lives in
+[`models/doi_prefix_allowlist.txt`](models/doi_prefix_allowlist.txt), generated
+from **dev only** by `scripts/build_allowlist.py` and committed so the scores
+reproduce. figshare (`10.6084`) and CCDC (`10.5517`) are absent even though both
+are real repositories: in this corpus they contribute 223 and 75
+annotator-rejected candidates and zero real citations, and the learned list
+excludes them because the labels do.
+
+### Reference mining, now that it is safe
+
+S1 measured 62 gold DOIs that appear *only* in the bibliography, and found that
+reading the whole reference list costs 11,775 false positives to recover 47 of
+them. With the prefix filter in place the same read becomes cheap:
+
+| Reading the bibliography | true mentions gained | false positives |
+|---|---|---|
+| unfiltered (S1) | 47 | 11,775 |
+| allowed prefixes only (S3) | **62** | **29** |
+
+### The cost, stated plainly
+
+| Configuration | F1 | Mention F1 |
+|---|---|---|
+| S2 | 0.3799 | 0.4050 |
+| S3, allowlist only | 0.6191 | 0.6601 |
+| **S3, allowlist + reference mining** | **0.6139** | **0.7129** |
+
+Reference mining raises extraction sharply (+0.053 mention F1) while *lowering*
+the headline F1 by 0.005. That is not a contradiction — it is a typing failure.
+The format prior calls every DOI Primary, but a data citation formatted as a
+bibliography entry is usually someone else's data:
+
+| Where the DOI was found | Primary | Secondary | majority |
+|---|---|---|---|
+| main text only | 49 | 7 | Primary (88%) |
+| main text and bibliography | 53 | 3 | Primary (95%) |
+| **bibliography only** | 25 | 37 | **Secondary (60%)** |
+
+S3 keeps reference mining because finding the citation is S3's job and the
+extraction gain is real. Fixing the label is S4's, and location is now a
+measured signal rather than a guess. The shift is already visible in the error
+mix: wrong-type errors were 23 of 914 false positives at S2, and are 60 of 274
+now.
+
 ## Evaluation
 
 Micro-averaged F1 over exact `(article_id, dataset_id, type)` triples, matching
@@ -295,6 +394,7 @@ src/mdc/data.py       load train_labels.csv, discover article files
 src/mdc/xmltext.py    schema-agnostic XML text, split main vs references
 src/mdc/dois.py       DOI regex, normalisation, self-citation removal
 src/mdc/accessions.py repository accession patterns + the selected set
+src/mdc/repositories.py DOI prefix allowlist: which registrants are data
 src/mdc/pipeline.py   article -> predicted ids, shared by every stage
 src/mdc/evaluate.py   precision / recall / F1, error breakdowns, I/O
 src/mdc/split.py      article-level dev / holdout split
@@ -303,10 +403,13 @@ scripts/make_split.py     write splits/dev.txt and splits/holdout.txt
 scripts/predict_empty.py  the null baseline
 scripts/predict.py        rule-based prediction; stages are its configurations
 scripts/eval_patterns.py  per-pattern cost/benefit and the cumulative sweep
+scripts/build_allowlist.py learn the DOI prefix allowlist from dev
+models/                   learned parameters, committed for reproducibility
 scripts/score.py          score a prediction CSV against a split
 tests/test_pipeline.py    end-to-end check on a synthetic fixture
 tests/test_extraction.py  DOI normalisation and XML parsing units
 tests/test_accessions.py  accession patterns and the format prior
+tests/test_repositories.py the DOI prefix allowlist
 splits/                   committed dev / holdout article-id lists
 reports/scores.jsonl      one line per scored run
 ```

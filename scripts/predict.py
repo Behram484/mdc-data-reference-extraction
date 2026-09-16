@@ -36,6 +36,10 @@ def main() -> int:
     ap.add_argument("--type-rule", default="format", choices=["format", "constant"])
     ap.add_argument("--constant-type", default=PRIMARY)
     ap.add_argument("--keep-self-doi", action="store_true")
+    ap.add_argument("--no-prefix-filter", action="store_true",
+                    help="ablation: keep DOIs from any registrant, not just data repositories")
+    ap.add_argument("--read-references", action="store_true",
+                    help="also mine the bibliography (only safe with the prefix filter on)")
     args = ap.parse_args()
 
     root = Path(args.data_dir)
@@ -56,7 +60,13 @@ def main() -> int:
             continue
         n_xml += 1
         for dataset_id in extract_ids(
-            path, article_id, sections, patterns, not args.keep_self_doi
+            path,
+            article_id,
+            sections,
+            patterns,
+            exclude_self=not args.keep_self_doi,
+            filter_doi_prefix=not args.no_prefix_filter,
+            read_references=args.read_references,
         ):
             ty = (
                 format_prior_type(dataset_id)
@@ -68,7 +78,9 @@ def main() -> int:
     write_predictions(args.out, triples)
     print(f"articles {len(articles)} ({n_xml} with XML) | sections {sorted(sections)}")
     print(f"patterns {len(patterns)}: {[p.name for p in patterns] or 'none (DOI only)'}")
-    print(f"type rule {args.type_rule}")
+    print(f"type rule {args.type_rule} | prefix filter "
+          f"{'off' if args.no_prefix_filter else 'on'} | references "
+          f"{'read' if args.read_references else 'skipped'}")
     print(f"wrote {len(triples)} predictions -> {args.out}")
     return 0
 
