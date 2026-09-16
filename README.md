@@ -35,8 +35,12 @@ help.
 | S2 | + accession ID patterns | 0.2752 | 0.6131 | **0.3799** | +0.2357 | 0.4050 |
 | S3 | + repository prefix filter, reference mining | 0.5741 | 0.6572 | **0.6129** | +0.2330 | 0.7117 |
 | S4 | + Primary/Secondary rules | 0.5988 | 0.6855 | **0.6392** | +0.0263 | 0.7117 |
-| S5 | + LLM on ambiguous cases only | _pending_ | | | | |
+| S5 | + LLM verification of ambiguous mentions | 0.5894 | 0.5477 | 0.5678 | **−0.0714** | 0.6465 |
 | S6 | + PDF fallback | _pending_ | | | | |
+
+**S5 made things worse and is not in the shipped pipeline.** The best
+configuration remains S4 at F1 0.6392. The row is kept because a measured
+negative result is the point of this table.
 
 **Mention F1** scores `(article_id, dataset_id)` with the type dropped. S1–S3
 are purely about *finding* citations and emit a constant type, so their headline
@@ -418,6 +422,75 @@ cross-validation inside dev, repeated across seeds. It is the same reason the
 dev/holdout split is by article (S0) — the mistake simply reappears one level
 down.
 
+
+## S5 — LLM verification (negative result)
+
+S4's errors are 216 false positives against 432 true ones, and 156 of those
+false positives are accession IDs in the main text: a Pfam or InterPro
+identifier named while discussing a protein domain rather than cited as data.
+Telling those apart needs the sentence, so this stage asks a local model
+(Ollama, `qwen2.5:7b-instruct`, 414 calls, temperature 0) to judge each one.
+
+**It does not work, and the pipeline does not use it.**
+
+### The break-even was computed first
+
+Before spending anything, the sensitivity of F1 to verifier quality was
+measured by simulating verifiers of known accuracy against dev:
+
+| keeps true mentions | drops false ones | F1 | Δ vs S4 |
+|---|---|---|---|
+| 1.00 | 1.00 | 0.7335 | +0.0943 (perfect oracle) |
+| 0.95 | 0.80 | 0.6938 | +0.0546 |
+| 0.90 | 0.70 | 0.6698 | +0.0305 |
+| 0.90 | 0.50 | 0.6493 | +0.0101 |
+| 0.80 | 0.50 | 0.6175 | −0.0217 |
+| 0.70 | 0.70 | 0.6155 | −0.0237 |
+
+Break-even needs roughly 85–90% keep with 60–70% drop. Below that a verifier
+destroys more true mentions than it removes false ones.
+
+### What the model actually did
+
+| Verifier | keeps true | drops false | overall accuracy |
+|---|---|---|---|
+| **do nothing (keep everything)** | 100% | 0% | **66.7%** |
+| prompt v1 — joined contexts | 69.0% | 26.0% | 54.7% |
+| prompt v2 — single passage, database named, 4 examples | 41.0% | 42.0% | 41.3% |
+
+Both prompts score **worse than not running the model at all**. On the full
+414 candidates, v1 keeps 69.4% of true mentions and drops 27.6% of false ones,
+which lands in the loss region of the table above and costs 0.0714 F1 —
+sacrificing 79 correct citations to remove 43 wrong ones.
+
+The second prompt was one deliberate iteration, not open-ended fiddling: the
+first version smeared every occurrence of an identifier into one truncated
+blob, which is a real implementation flaw worth fixing before blaming the
+model. Naming the database and giving four worked examples made the model far
+more willing to answer MENTION — better at dropping, much worse at keeping,
+and worse overall.
+
+### Honest limits of this result
+
+This says a 7B model with these two prompts fails the task. It does not show
+that no LLM can do it. A larger model was not tried: the machine has 6 GB of
+VRAM, so anything past ~7B spills to CPU, and 414 calls already took 18 minutes
+at 0.39 calls/s with the model fully resident on the GPU. The 414 decisions are
+archived in [`reports/llm_decisions.jsonl`](reports/llm_decisions.jsonl) so the
+claim can be checked rather than taken on trust.
+
+The infrastructure stays in the repository and is a one-flag run against any
+Ollama model, so the experiment is cheap to repeat when better hardware or a
+better prompt is available:
+
+```bash
+python scripts/verify_mentions.py --model <model> --prompt-version 2 --sample 150 --grade
+```
+
+Verification fails **open** by design: an unreachable model, a timeout or an
+unparseable reply keeps the mention. A verifier outage costs precision, never
+recall.
+
 ## Evaluation
 
 Micro-averaged F1 over exact `(article_id, dataset_id, type)` triples, matching
@@ -467,6 +540,7 @@ src/mdc/accessions.py repository accession patterns + the selected set
 src/mdc/repositories.py DOI prefix allowlist: which registrants are data
 src/mdc/context.py    per-mention evidence: location + surrounding text
 src/mdc/classify.py   the Primary/Secondary rule
+src/mdc/verify.py     LLM verification client, prompts, decision cache
 src/mdc/pipeline.py   article -> predicted ids, shared by every stage
 src/mdc/evaluate.py   precision / recall / F1, error breakdowns, I/O
 src/mdc/split.py      article-level dev / holdout split
@@ -477,6 +551,7 @@ scripts/predict.py        rule-based prediction; stages are its configurations
 scripts/eval_patterns.py  per-pattern cost/benefit and the cumulative sweep
 scripts/build_allowlist.py learn the DOI prefix allowlist from dev
 scripts/build_prefix_types.py learn the majority type per repository
+scripts/verify_mentions.py S5: LLM verification of ambiguous mentions
 models/                   learned parameters, committed for reproducibility
 scripts/score.py          score a prediction CSV against a split
 tests/test_pipeline.py    end-to-end check on a synthetic fixture
@@ -484,6 +559,7 @@ tests/test_extraction.py  DOI normalisation and XML parsing units
 tests/test_accessions.py  accession patterns and the format prior
 tests/test_repositories.py the DOI prefix allowlist
 tests/test_classify.py    evidence collection and the type rule
+tests/test_verify.py      reply parsing, caching, fail-open policy
 splits/                   committed dev / holdout article-id lists
 reports/scores.jsonl      one line per scored run
 ```
