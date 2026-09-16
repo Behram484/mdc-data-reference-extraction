@@ -1,0 +1,47 @@
+"""Turning one article into a set of predicted data citations.
+
+Shared by every stage from S1 onwards so that a stage differs from the one
+before it only in configuration, never in a reimplementation of the same walk.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from mdc.accessions import Pattern, SELECTED, find_accessions
+from mdc.dois import article_id_to_doi, drop_self_citations, find_dois
+from mdc.xmltext import MAIN, parse_segments, section_text, self_doi_candidates
+
+PRIMARY = "Primary"
+SECONDARY = "Secondary"
+
+
+def extract_ids(
+    path: str | os.PathLike,
+    article_id: str,
+    sections: set[str] | None = None,
+    patterns: tuple[Pattern, ...] = SELECTED,
+    exclude_self: bool = True,
+) -> set[str]:
+    """Every dataset id this article cites, DOIs normalised, accessions verbatim."""
+    segments = parse_segments(path)
+    text = section_text(segments, sections or {MAIN})
+
+    dois = find_dois(text)
+    if exclude_self:
+        self_dois = self_doi_candidates(path) | {article_id_to_doi(article_id)}
+        dois = drop_self_citations(dois, self_dois)
+
+    return dois | find_accessions(text, patterns)
+
+
+def format_prior_type(dataset_id: str) -> str:
+    """Guess Primary/Secondary from the shape of the id alone.
+
+    Not a classifier -- a measured prior. In the training labels DOI citations
+    run 215 Primary / 110 Secondary while accession IDs run 339 Secondary /
+    55 Primary, which is ~77% accuracy from format alone. S4 has to beat this
+    to be worth anything, so it is what S2 and S3 emit.
+    """
+    return PRIMARY if dataset_id.startswith("https://doi.org/") else SECONDARY

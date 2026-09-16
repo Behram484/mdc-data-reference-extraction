@@ -32,7 +32,7 @@ help.
 |-------|-----------|-----------|--------|-----|------|------------|
 | S0 | Empty baseline (pipeline check) | 0.0000 | 0.0000 | 0.0000 | — | 0.0000 |
 | S1 | XML parsing + DOI regex | 0.1201 | 0.1802 | **0.1442** | +0.1442 | 0.1583 |
-| S2 | + accession ID patterns | _pending_ | | | | |
+| S2 | + accession ID patterns | 0.2752 | 0.6131 | **0.3799** | +0.2357 | 0.4050 |
 | S3 | + normalisation and dedup | _pending_ | | | | |
 | S4 | + Primary/Secondary rules | _pending_ | | | | |
 | S5 | + LLM on ambiguous cases only | _pending_ | | | | |
@@ -156,6 +156,99 @@ turns out to come entirely from accession IDs:
 Format alone therefore predicts type at about 77% accuracy, which is the
 baseline S4 has to beat.
 
+
+## S2 — Accession ID patterns
+
+Twelve repository patterns, each one derived from the gold labels rather than
+from a general list of bioinformatics databases. That distinction turned out to
+matter: the obvious candidates barely occur in this corpus, while the
+repositories that carry most of the data appear on no such list.
+
+| Pattern from the usual list | gold citations here |
+|---|---|
+| GEO `GSE`/`GSM` | 3 / 0 |
+| SRA `SRR` | 4 |
+| ENA `ERR` / `PRJEB` | 1 / 0 |
+| dbGaP `phs` | 0 |
+
+| What actually carries the data | gold citations |
+|---|---|
+| BioSample `SAMN\d{5,}` | 41 |
+| ArrayExpress `E-[A-Z]{4}-\d+` | 37 |
+| GISAID `EPI_ISL_\d+` / `EPI\d{6,}` | 35 / 29 |
+| InterPro `IPR\d{6}` | 33 |
+| ChEMBL `CHEMBL\d+` | 29 |
+| BioProject `PRJNA\d+` | 26 |
+| Pfam `PF\d{5}` | 21 |
+| Ensembl `ENS[A-Z]*[GTP]\d{11}` | 21 |
+| KEGG orthologs `K\d{5}` | 20 |
+| Cellosaurus `CVCL_\w{4}` | 14 |
+| PRIDE `PXD\d{6}` | 10 |
+
+### Which patterns earn their place
+
+`scripts/eval_patterns.py --cumulative` adds patterns to the S1 baseline one at
+a time, best measured precision first. Mention-level F1 on dev:
+
+| + pattern | precision | recall | F1 | Δ F1 |
+|---|---|---|---|---|
+| (S1, DOI only) | 0.132 | 0.198 | 0.1583 | |
+| + gisaid_epi | 0.160 | 0.247 | 0.1940 | +0.0357 |
+| + chembl | 0.185 | 0.295 | 0.2272 | +0.0332 |
+| + interpro | 0.208 | 0.341 | 0.2580 | +0.0308 |
+| + gisaid_isl | 0.226 | 0.380 | 0.2833 | +0.0252 |
+| + arrayexpress | 0.253 | 0.445 | 0.3225 | +0.0392 |
+| + pfam | 0.267 | 0.482 | 0.3436 | +0.0212 |
+| + cellosaurus | 0.277 | 0.511 | 0.3592 | +0.0156 |
+| + pride | 0.282 | 0.528 | 0.3678 | +0.0085 |
+| + bioproject | 0.291 | 0.572 | 0.3855 | +0.0177 |
+| + kegg_ortholog | 0.297 | 0.608 | 0.3986 | +0.0131 |
+| + biosample | 0.295 | 0.638 | 0.4038 | +0.0052 |
+| **+ ensembl** | 0.293 | **0.654** | **0.4050** | +0.0012 |
+| + sra_run | 0.288 | 0.663 | 0.4019 | −0.0031 |
+| + cath | 0.275 | 0.687 | 0.3929 | −0.0090 |
+| + genbank | 0.209 | 0.696 | 0.3218 | **−0.0698** |
+| + pdb | 0.201 | 0.703 | 0.3120 | −0.0097 |
+| + geo | 0.193 | 0.708 | 0.3036 | −0.0085 |
+| + refseq · dbsnp · uniprot | | | 0.2937 | −0.0099 |
+
+Everything after `ensembl` makes the score worse, so the selected set stops
+there. Four patterns are individually destructive:
+
+| Pattern | tp | fp | precision | why |
+|---|---|---|---|---|
+| `genbank` `[A-Z]{1,2}\d{5,6}` | 42 | 483 | 0.080 | collides with gene names and figure labels |
+| `cath` `\d.\d.\d.\d` | 14 | 100 | 0.123 | identical in shape to a version number |
+| `pdb` 4-char code | 4 | 98 | 0.039 | matches ordinary words — `5min`, `2x4b` |
+| `geo` `GSE\d+` | 3 | 88 | 0.033 | almost no gold support here to begin with |
+
+The handoff plan predicted PDB would be the precision disaster. It is — 0.039
+precision — but `genbank` is worse in absolute terms, costing 483 false
+positives against 42 true ones, and it was not on the list of suspects at all.
+
+Two patterns are *excluded despite having gold support*: `empiar` (12) and
+`hpa` (9). Every one of their gold citations landed in holdout, so dev gives no
+evidence either way. They would probably help — but selecting them on the
+strength of holdout labels is precisely the contamination that would make the
+final holdout number meaningless. They stay in the registry, out of the
+selection.
+
+### Type assignment
+
+S2 replaces S1's constant with the **format prior**: DOI → Primary, accession →
+Secondary. This is not a classifier, it is the measured base rate, and it is
+worth more than any constant:
+
+| Type rule | Precision | Recall | F1 |
+|---|---|---|---|
+| constant Primary | 0.0912 | 0.2032 | 0.1259 |
+| constant Secondary | 0.2022 | 0.4505 | 0.2791 |
+| **format prior** | 0.2752 | 0.6131 | **0.3799** |
+
+Type errors are now a rounding error in the total: of 914 false positives, only
+23 are a mention found with the wrong type. The other 891 are spurious mentions.
+**Precision, not classification, is what S3 has to fix.**
+
 ## Evaluation
 
 Micro-averaged F1 over exact `(article_id, dataset_id, type)` triples, matching
@@ -201,15 +294,19 @@ via `--json-out`.
 src/mdc/data.py       load train_labels.csv, discover article files
 src/mdc/xmltext.py    schema-agnostic XML text, split main vs references
 src/mdc/dois.py       DOI regex, normalisation, self-citation removal
+src/mdc/accessions.py repository accession patterns + the selected set
+src/mdc/pipeline.py   article -> predicted ids, shared by every stage
 src/mdc/evaluate.py   precision / recall / F1, error breakdowns, I/O
 src/mdc/split.py      article-level dev / holdout split
 scripts/inspect_data.py   report what is on disk before trusting it
 scripts/make_split.py     write splits/dev.txt and splits/holdout.txt
 scripts/predict_empty.py  the null baseline
-scripts/predict_s1.py     S1: DOI extraction (--sections runs the ablation)
+scripts/predict.py        rule-based prediction; stages are its configurations
+scripts/eval_patterns.py  per-pattern cost/benefit and the cumulative sweep
 scripts/score.py          score a prediction CSV against a split
 tests/test_pipeline.py    end-to-end check on a synthetic fixture
 tests/test_extraction.py  DOI normalisation and XML parsing units
+tests/test_accessions.py  accession patterns and the format prior
 splits/                   committed dev / holdout article-id lists
 reports/scores.jsonl      one line per scored run
 ```
@@ -244,8 +341,9 @@ python scripts/inspect_data.py
 ```bash
 python scripts/inspect_data.py
 python scripts/make_split.py
-python scripts/predict_empty.py --out outputs/s0_empty.csv
-python scripts/score.py --pred outputs/s0_empty.csv --split splits/dev.txt --label "S0 empty baseline"
+python scripts/predict.py --split splits/dev.txt --out outputs/s2.csv --patterns selected
+python scripts/score.py --pred outputs/s2.csv --split splits/dev.txt --label "S2"
+python scripts/eval_patterns.py --split splits/dev.txt --cumulative
 python -m unittest discover -s tests -v
 ```
 
