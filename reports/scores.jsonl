@@ -1,1 +1,2 @@
 {"stage": "S0 empty baseline", "split": "dev", "precision": 0.0, "recall": 0.0, "f1": 0.0, "tp": 0, "fp": 0, "fn": 566, "n_pred": 0, "n_gold": 566}
+{"stage": "S1 XML + DOI regex", "split": "dev", "precision": 0.12014134275618374, "recall": 0.18021201413427562, "f1": 0.14416961130742048, "tp": 102, "fp": 747, "fn": 464, "n_pred": 849, "n_gold": 566, "mention_f1": 0.158304, "mention_precision": 0.13192, "mention_recall": 0.19788}

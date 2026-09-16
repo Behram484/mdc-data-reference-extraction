@@ -15,6 +15,8 @@ import _paths  # noqa: F401
 from mdc.data import gold_triples, load_labels
 from mdc.evaluate import (
     load_predictions,
+    mentions,
+    score,
     per_type_scores,
     restrict,
     score_on_split,
@@ -47,6 +49,11 @@ def main() -> int:
 
     g = restrict(gold, article_ids)
     p = restrict(pred, article_ids)
+
+    mention = score(mentions(g), mentions(p))
+    print(f"  mention-level (type ignored)")
+    print(f"  {mention}")
+
     if p:
         print("\n  by type:")
         for ty, s in per_type_scores(g, p).items():
@@ -63,7 +70,14 @@ def main() -> int:
     )
 
     if args.json_out:
-        record = {"stage": name, "split": Path(args.split).stem, **result.as_dict()}
+        record = {
+            "stage": name,
+            "split": Path(args.split).stem,
+            **result.as_dict(),
+            "mention_f1": round(mention.f1, 6),
+            "mention_precision": round(mention.precision, 6),
+            "mention_recall": round(mention.recall, 6),
+        }
         out = Path(args.json_out)
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "a", encoding="utf-8") as fh:

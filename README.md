@@ -28,15 +28,20 @@ The deliverable is the table below: **what each technique is worth, measured.**
 Every stage is one commit, one number, and an honest note when a stage does not
 help.
 
-| Stage | Technique | Precision | Recall | F1 | Δ F1 |
-|-------|-----------|-----------|--------|-----|------|
-| S0 | Empty baseline (pipeline check) | 0.0000 | 0.0000 | 0.0000 | — |
-| S1 | XML parsing + DOI regex | _pending_ | | | |
-| S2 | + accession ID patterns | _pending_ | | | |
-| S3 | + normalisation and dedup | _pending_ | | | |
-| S4 | + Primary/Secondary rules | _pending_ | | | |
-| S5 | + LLM on ambiguous cases only | _pending_ | | | |
-| S6 | + PDF fallback | _pending_ | | | |
+| Stage | Technique | Precision | Recall | F1 | Δ F1 | Mention F1 |
+|-------|-----------|-----------|--------|-----|------|------------|
+| S0 | Empty baseline (pipeline check) | 0.0000 | 0.0000 | 0.0000 | — | 0.0000 |
+| S1 | XML parsing + DOI regex | 0.1201 | 0.1802 | **0.1442** | +0.1442 | 0.1583 |
+| S2 | + accession ID patterns | _pending_ | | | | |
+| S3 | + normalisation and dedup | _pending_ | | | | |
+| S4 | + Primary/Secondary rules | _pending_ | | | | |
+| S5 | + LLM on ambiguous cases only | _pending_ | | | | |
+| S6 | + PDF fallback | _pending_ | | | | |
+
+**Mention F1** scores `(article_id, dataset_id)` with the type dropped. S1–S3
+are purely about *finding* citations and emit a constant type, so their headline
+F1 is capped by how often that constant happens to be right. Mention F1 is the
+honest measure of extraction until S4 adds a real classifier.
 
 Scores are measured on the local `dev` split (418 articles, 566 gold triples),
 not the Kaggle leaderboard. `holdout` (105 articles, 153 triples) stays sealed
@@ -91,6 +96,66 @@ fallback in S4 would be a *worse* baseline than it first looks.
 articles that have XML; the other 74 are reachable only through S6's PDF
 fallback. Every recall figure for S1–S5 should be read against that ceiling.
 
+
+## S1 — XML parsing and DOI extraction
+
+Regex `10.\d{4,9}/...` over the full text, normalised to
+`https://doi.org/<lowercase doi>`, with the article's own DOI removed.
+
+Two structural decisions dominate the result, and both were measured rather
+than assumed:
+
+| Configuration | Precision | Recall | F1 |
+|---|---|---|---|
+| main text only | 0.1201 | 0.1802 | **0.1442** |
+| including the reference list | 0.0100 | 0.2244 | 0.0192 |
+| main text, own DOI not excluded | 0.0848 | 0.1802 | 0.1153 |
+
+**Excluding the bibliography is worth 7.5× F1.** A reference list is a dense
+block of DOIs of cited *papers* — one sample article has 243 DOI occurrences
+against a single gold citation. Reading it adds 47 true mentions and 11,775
+false ones.
+
+**Excluding the article's own DOI is worth +0.029 F1** — it removes 354 false
+positives, since a paper's own identifier appears throughout its own metadata.
+
+### Where the remaining recall goes
+
+Of the 252 gold DOI citations in `dev` (the only ones S1 can address — the
+other 314 are accession IDs, which is S2):
+
+| | count | share |
+|---|---|---|
+| found in main text | 112 | 44.4% |
+| **only in the reference list** | 62 | 24.6% |
+| article has no XML | 59 | 23.4% |
+| not present in the XML at all | 18 | 7.1% |
+| present but missed by the regex | 1 | 0.4% |
+
+The regex itself is not the bottleneck — it misses one citation out of 252.
+
+The 62 in the reference list are the interesting number: they are real data
+citations formatted as bibliography entries. Reading the whole bibliography to
+reach them costs 11,775 false positives, but reading *only* entries whose DOI
+prefix belongs to a known data repository should recover most of them for
+almost nothing. That is an S3 experiment, backed by this measurement rather
+than by a guess.
+
+### Type constant
+
+S1 labels everything **Primary**. Among gold DOI citations the split is 215
+Primary / 110 Secondary, so Primary is the majority for *this* subset — the
+reverse of the corpus as a whole (449 Secondary / 270 Primary), a skew that
+turns out to come entirely from accession IDs:
+
+| | Primary | Secondary |
+|---|---|---|
+| DOI citations | 215 | 110 |
+| accession IDs | 55 | 339 |
+
+Format alone therefore predicts type at about 77% accuracy, which is the
+baseline S4 has to beat.
+
 ## Evaluation
 
 Micro-averaged F1 over exact `(article_id, dataset_id, type)` triples, matching
@@ -134,13 +199,17 @@ via `--json-out`.
 
 ```
 src/mdc/data.py       load train_labels.csv, discover article files
+src/mdc/xmltext.py    schema-agnostic XML text, split main vs references
+src/mdc/dois.py       DOI regex, normalisation, self-citation removal
 src/mdc/evaluate.py   precision / recall / F1, error breakdowns, I/O
 src/mdc/split.py      article-level dev / holdout split
 scripts/inspect_data.py   report what is on disk before trusting it
 scripts/make_split.py     write splits/dev.txt and splits/holdout.txt
 scripts/predict_empty.py  the null baseline
+scripts/predict_s1.py     S1: DOI extraction (--sections runs the ablation)
 scripts/score.py          score a prediction CSV against a split
 tests/test_pipeline.py    end-to-end check on a synthetic fixture
+tests/test_extraction.py  DOI normalisation and XML parsing units
 splits/                   committed dev / holdout article-id lists
 reports/scores.jsonl      one line per scored run
 ```

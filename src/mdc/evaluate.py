@@ -98,6 +98,17 @@ def type_confusion(gold: set[Triple], pred: set[Triple]) -> dict[str, int]:
     return dict(counts.most_common())
 
 
+def mentions(triples: set[Triple]) -> set[tuple[str, str]]:
+    """Drop the type, leaving (article_id, dataset_id).
+
+    Scoring on this isolates *extraction* from *classification*. S1-S3 are
+    entirely about finding mentions, and with a constant type their headline F1
+    is capped by whatever fraction of citations happen to carry that type --
+    which would make a real extraction gain look like no gain at all.
+    """
+    return {(a, d) for a, d, _ in triples}
+
+
 def load_predictions(path: str | os.PathLike) -> set[Triple]:
     """Read a prediction CSV. Accepts the Kaggle layout with or without row_id."""
     with open(Path(path), "r", encoding="utf-8-sig", newline="") as fh:
