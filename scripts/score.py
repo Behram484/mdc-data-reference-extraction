@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from mdc.split import read_split
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pred", required=True, help="CSV with article_id,dataset_id,type")
-    ap.add_argument("--data-dir", default="data")
+    ap.add_argument("--data-dir", default=os.environ.get("MDC_DATA_DIR", "data"))
     ap.add_argument("--split", default="splits/dev.txt")
     ap.add_argument("--label", default="", help="stage name, e.g. 'S1 DOI regex'")
     ap.add_argument("--json-out", default="", help="also append the score as JSON lines")

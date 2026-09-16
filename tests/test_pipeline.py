@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from mdc.data import describe_labels, gold_triples, load_labels  # noqa: E402
 from mdc.evaluate import score  # noqa: E402
-from mdc.split import split_articles  # noqa: E402
+from mdc.split import split_articles, stratified_split_articles  # noqa: E402
 
 
 def build_fixture(root: Path, n_articles: int = 40) -> None:
@@ -105,6 +105,21 @@ class TestSplit(unittest.TestCase):
                     in_dev ^ in_hold,
                     f"{lab.article_id}: dev={in_dev} holdout={in_hold}",
                 )
+
+
+    def test_stratified_split_preserves_citing_rate(self):
+        citing = {f"c{i}" for i in range(214)}
+        quiet = {f"q{i}" for i in range(309)}
+        dev, hold = stratified_split_articles(citing, quiet)
+        self.assertEqual(set(dev) | set(hold), citing | quiet)
+        self.assertFalse(set(dev) & set(hold))
+        dev_rate = len(set(dev) & citing) / len(dev)
+        hold_rate = len(set(hold) & citing) / len(hold)
+        self.assertLess(abs(dev_rate - hold_rate), 0.02)
+
+    def test_stratified_split_rejects_overlapping_strata(self):
+        with self.assertRaises(ValueError):
+            stratified_split_articles({"a", "b"}, {"b", "c"})
 
 
 class TestEndToEnd(unittest.TestCase):

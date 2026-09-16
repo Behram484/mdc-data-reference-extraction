@@ -38,8 +38,58 @@ help.
 | S5 | + LLM on ambiguous cases only | _pending_ | | | |
 | S6 | + PDF fallback | _pending_ | | | |
 
-Scores are measured on a local `dev` split, not the Kaggle leaderboard. S2 is
-broken down per repository pattern so the contribution of each one is visible.
+Scores are measured on the local `dev` split (418 articles, 566 gold triples),
+not the Kaggle leaderboard. `holdout` (105 articles, 153 triples) stays sealed
+until the end. S2 is broken down per repository pattern so the contribution of
+each one is visible.
+
+The public `test/` directory holds only 25 XML / 30 PDF files — it is a format
+sample, not the real test set, which is served at rerun time. Local evaluation
+is therefore the only usable feedback loop.
+
+## What is in the data
+
+Measured with `scripts/inspect_data.py`, not assumed:
+
+| | |
+|---|---|
+| train articles | 523 labelled (400 XML, 524 PDF — 76.3% have XML) |
+| label rows | 1066 → **719 real citations** + 347 rejected |
+| articles carrying a citation | 214 of 523 |
+| citations per citing article | 3.36 mean, 32 max |
+| type mix | Secondary 449, Primary 270 |
+
+Three findings that shape the plan:
+
+**`Missing` is a type, not a sentinel.** It appears 347 times in the `type`
+column and never in `dataset_id`. It marks a candidate id that annotators found
+in the text and then *rejected*. No article mixes `Missing` with real labels, so
+the 309 articles carrying only `Missing` rows are the true negatives — anything
+predicted for them is a false positive.
+
+Those 347 rejected ids are the single most useful thing in the training data for
+precision: they are exactly the shapes that look like data citations but are
+not. Grouped by DOI prefix, the split is near-total —
+
+| DOI prefix | Missing | Primary | Secondary |
+|---|---|---|---|
+| `10.6084` figshare | 223 | 0 | 0 |
+| `10.5517` CCDC | 75 | 0 | 0 |
+| `10.17182` | 23 | 0 | 0 |
+| `10.5061` Dryad | 3 | 79 | 0 |
+| `10.5281` Zenodo | 0 | 21 | 1 |
+| `10.5066` USGS | 0 | 10 | 26 |
+
+— so figshare and CCDC DOIs are pure noise here (321 of 347 rejections), while
+Dryad is almost always Primary. S2 and S3 act on this rather than guessing.
+
+**Secondary outnumbers Primary, 449 to 270.** Worth stating because the
+opposite is the intuitive assumption, and a "predict everything Primary"
+fallback in S4 would be a *worse* baseline than it first looks.
+
+**Recall is capped at 89.7% without PDFs.** 645 of the 719 gold triples sit in
+articles that have XML; the other 74 are reachable only through S6's PDF
+fallback. Every recall figure for S1–S5 should be read against that ceiling.
 
 ## Evaluation
 
@@ -71,7 +121,14 @@ pipeline see the answer for a paper it is then scored on. Default 80/20,
 the table above is reproducible.
 
 The split covers *all* labelled articles, including those with no citation —
-those true negatives are what keeps precision meaningful.
+those true negatives are what keeps precision meaningful. It is **stratified on
+whether an article cites anything**: only 214 of 523 do, and an unstratified
+draw at seed 42 left dev at 42.1% citing against holdout's 36.2%, which would
+shift the achievable precision between the two halves. Stratified, both sit at
+40.9% / 41.0%.
+
+Every scored run is appended to [`reports/scores.jsonl`](reports/scores.jsonl)
+via `--json-out`.
 
 ## Layout
 
@@ -84,6 +141,8 @@ scripts/make_split.py     write splits/dev.txt and splits/holdout.txt
 scripts/predict_empty.py  the null baseline
 scripts/score.py          score a prediction CSV against a split
 tests/test_pipeline.py    end-to-end check on a synthetic fixture
+splits/                   committed dev / holdout article-id lists
+reports/scores.jsonl      one line per scored run
 ```
 
 Python 3.12, standard library only so far. No dependencies are added until a
@@ -91,7 +150,7 @@ stage actually needs one.
 
 ## Data setup
 
-The data (2.13 GB) is not in this repository and `data/` is gitignored.
+The data (~2 GB, 981 files) is not in this repository and `data/` is gitignored.
 Download it from the competition page and unzip so that:
 
 ```
@@ -103,19 +162,21 @@ data/
   sample_submission.csv   row_id, article_id, dataset_id, type
 ```
 
-`--data-dir` accepts any path, so the data can live outside the repo:
+`--data-dir` accepts any path, so the data can live outside the repo. Set
+`MDC_DATA_DIR` once and every script picks it up:
 
 ```bash
-python scripts/inspect_data.py --data-dir /path/to/mdc-data
+export MDC_DATA_DIR=/path/to/mdc-data     # PowerShell: $env:MDC_DATA_DIR="D:\kaggle"
+python scripts/inspect_data.py
 ```
 
 ## Running
 
 ```bash
-python scripts/inspect_data.py --data-dir data
-python scripts/make_split.py  --data-dir data
-python scripts/predict_empty.py --out outputs/empty.csv
-python scripts/score.py --pred outputs/empty.csv --split splits/dev.txt --label "S0 empty baseline"
+python scripts/inspect_data.py
+python scripts/make_split.py
+python scripts/predict_empty.py --out outputs/s0_empty.csv
+python scripts/score.py --pred outputs/s0_empty.csv --split splits/dev.txt --label "S0 empty baseline"
 python -m unittest discover -s tests -v
 ```
 

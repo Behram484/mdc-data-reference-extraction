@@ -12,9 +12,21 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-# train_labels.csv marks articles that carry no data citation with these
-# sentinel values. They are not real citations, so they never enter the gold
-# set -- but they do tell us which articles are true negatives.
+# "Missing" appears in train_labels.csv as a *type*, alongside Primary and
+# Secondary -- never as a dataset_id (verified: 347 rows, 0 of them in the
+# dataset_id column). It marks a candidate id that the annotators found in the
+# text and then rejected as not being a data citation.
+#
+# Two consequences, both load-bearing:
+#   1. These rows never enter the gold set. A submission may only contain
+#      Primary/Secondary, so an (article, dataset, "Missing") triple is
+#      unmatchable by construction.
+#   2. The 309 articles that carry only Missing rows are the true negatives.
+#      Any prediction for them is a false positive.
+#
+# The rejected dataset_ids are also the best false-positive catalogue in the
+# data -- they are precisely the id shapes that look like data citations but
+# are not. S3 mines this.
 MISSING = "Missing"
 
 VALID_TYPES = ("Primary", "Secondary")
@@ -28,7 +40,8 @@ class Label:
 
     @property
     def is_missing(self) -> bool:
-        return self.dataset_id == MISSING or self.type == MISSING
+        """True for a candidate id the annotators rejected. See MISSING above."""
+        return self.type == MISSING
 
     @property
     def triple(self) -> tuple[str, str, str]:

@@ -9,17 +9,23 @@ those are the true negatives that keep precision honest.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import _paths  # noqa: F401
 
 from mdc.data import all_labelled_articles, articles_with_citations, load_labels
-from mdc.split import DEFAULT_DEV_FRACTION, DEFAULT_SEED, split_articles, write_split
+from mdc.split import (
+    DEFAULT_DEV_FRACTION,
+    DEFAULT_SEED,
+    stratified_split_articles,
+    write_split,
+)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", default="data")
+    ap.add_argument("--data-dir", default=os.environ.get("MDC_DATA_DIR", "data"))
     ap.add_argument("--out-dir", default="splits", help="committed to git; ids only")
     ap.add_argument("--dev-fraction", type=float, default=DEFAULT_DEV_FRACTION)
     ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
@@ -34,7 +40,9 @@ def main() -> int:
     articles = all_labelled_articles(labels)
     citing = articles_with_citations(labels)
 
-    dev, holdout = split_articles(articles, args.dev_fraction, args.seed)
+    dev, holdout = stratified_split_articles(
+        citing, articles - citing, args.dev_fraction, args.seed
+    )
     out = Path(args.out_dir)
     write_split(out / "dev.txt", dev)
     write_split(out / "holdout.txt", holdout)

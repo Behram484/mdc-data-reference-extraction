@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -50,7 +51,7 @@ def shape_of(dataset_id: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-dir", default="data", help="root holding train/, test/, *.csv")
+    ap.add_argument("--data-dir", default=os.environ.get("MDC_DATA_DIR", "data"), help="root holding train/, test/, *.csv")
     args = ap.parse_args()
 
     root = Path(args.data_dir).expanduser().resolve()

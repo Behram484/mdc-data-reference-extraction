@@ -1,0 +1,1 @@
+{"stage": "S0 empty baseline", "split": "dev", "precision": 0.0, "recall": 0.0, "f1": 0.0, "tp": 0, "fp": 0, "fn": 566, "n_pred": 0, "n_gold": 566}
