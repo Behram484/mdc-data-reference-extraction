@@ -1,0 +1,29 @@
+# --- competition data: never commit (2.13 GB) ---
+data/*
+!data/.gitkeep
+*.xml
+*.pdf
+
+# --- generated artefacts ---
+outputs/*
+!outputs/.gitkeep
+*.sqlite
+*.db
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+*.egg-info/
+
+# --- editors / os ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
