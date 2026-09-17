@@ -8,6 +8,58 @@ Task and data come from the Kaggle competition
 [Make Data Count — Finding Data References](https://www.kaggle.com/competitions/make-data-count-finding-data-references)
 (data licensed CC0; papers from the Europe PMC open-access subset).
 
+## What this repository is actually for
+
+The deliverable is the table below: **what each technique is worth, measured.**
+Every stage is one commit, one number, and an honest note when a stage does not
+help. Both columns are shown together on purpose — `dev` is where every decision
+was made, `holdout` is what those decisions were actually worth.
+
+| Stage | Technique | P | R | **dev F1** | Δ | Mention F1 | **holdout F1** |
+|-------|-----------|---|---|-----|---|------------|------------|
+| S0 | Empty baseline (pipeline check) | 0.0000 | 0.0000 | 0.0000 | — | 0.0000 | 0.0000 |
+| S1 | XML parsing + DOI regex | 0.1201 | 0.1802 | **0.1442** | +0.1442 | 0.1583 | 0.0574 |
+| S2 | + accession ID patterns | 0.2752 | 0.6131 | **0.3799** | +0.2357 | 0.4050 | 0.1384 |
+| S3 | + repository prefix filter, reference mining | 0.5741 | 0.6572 | **0.6129** | +0.2330 | 0.7117 | 0.2431 |
+| S4 | + Primary/Secondary rules | 0.5988 | 0.6855 | **0.6392** | +0.0263 | 0.7117 | **0.2847** |
+| S5 | + LLM verification of ambiguous mentions | 0.5894 | 0.5477 | 0.5678 | **−0.0714** | 0.6465 | not run |
+| S6 | + PDF fallback (opt-in) | 0.5747 | 0.7473 | 0.6498 | +0.0106 | 0.7174 | 0.2794 |
+
+### Read this before the numbers
+
+**The honest number is 0.2847, not 0.6392.** `dev` is the split every choice was
+tuned on; `holdout` was opened at the end and scored. The gap between them is
+the most useful thing this project measured, and
+[Holdout](#holdout--the-honest-number) takes it apart: a fifth of holdout is
+unreachable because of patterns deliberately excluded on thin evidence, a single
+article inverts the type rule, and with 43 citing articles the score is worth
+about ±0.35 either way.
+
+**Two stages did not work, and both are in the table.** S5 (LLM verification)
+cost 0.0714 F1 and is not in the shipped pipeline. S6 (PDF fallback) helps on
+dev, hurts on holdout, and is within noise — it ships off by default. The
+shipped configuration is **S4**.
+
+Three methodological traps are recorded where they were hit rather than
+smoothed over, because the same mistake appeared three times in different
+clothes: a row-level split would leak across citations in one paper (S0),
+ungrouped folds made `duck egypt` look like a predictor of citation type (S4),
+and a mention-level confidence interval would have hidden a ±0.35 uncertainty
+behind 153 apparent samples (Holdout).
+
+**Mention F1** scores `(article_id, dataset_id)` with the type dropped. S1–S3
+are purely about *finding* citations and emit a constant type, so their headline
+F1 is capped by how often that constant happens to be right. Mention F1 is the
+honest measure of extraction until S4 adds a real classifier.
+
+`dev` is 418 articles / 566 gold triples, `holdout` 105 articles / 153 triples.
+Neither is the Kaggle leaderboard. S2 is broken down per repository pattern so
+the contribution of each one is visible.
+
+The public `test/` directory holds only 25 XML / 30 PDF files — it is a format
+sample, not the real test set, which is served at rerun time. Local evaluation
+is therefore the only usable feedback loop.
+
 ## Independence statement
 
 This is an **independent rebuild, started 2026, written from scratch.**
@@ -22,42 +74,44 @@ consulted in, any public competition notebook. Third-party models and libraries
 are credited in [Credits](#credits). The 0.5797 above is a reference point, not
 a target — the goal here is a measured, staged build, not a leaderboard score.
 
-## What this repository is actually for
+## Evaluation
 
-The deliverable is the table below: **what each technique is worth, measured.**
-Every stage is one commit, one number, and an honest note when a stage does not
-help.
+Micro-averaged F1 over exact `(article_id, dataset_id, type)` triples, matching
+the competition metric:
 
-| Stage | Technique | Precision | Recall | F1 | Δ F1 | Mention F1 |
-|-------|-----------|-----------|--------|-----|------|------------|
-| S0 | Empty baseline (pipeline check) | 0.0000 | 0.0000 | 0.0000 | — | 0.0000 |
-| S1 | XML parsing + DOI regex | 0.1201 | 0.1802 | **0.1442** | +0.1442 | 0.1583 |
-| S2 | + accession ID patterns | 0.2752 | 0.6131 | **0.3799** | +0.2357 | 0.4050 |
-| S3 | + repository prefix filter, reference mining | 0.5741 | 0.6572 | **0.6129** | +0.2330 | 0.7117 |
-| S4 | + Primary/Secondary rules | 0.5988 | 0.6855 | **0.6392** | +0.0263 | 0.7117 |
-| S5 | + LLM verification of ambiguous mentions | 0.5894 | 0.5477 | 0.5678 | **−0.0714** | 0.6465 |
-| S6 | + PDF fallback (opt-in) | 0.5747 | 0.7473 | 0.6498 | +0.0106 | 0.7174 |
+- The same `(dataset_id, type)` inside one article counts once — the scorer uses
+  sets, so this is structural rather than a cleanup step.
+- An article with no data citation must not appear in the predictions. If it
+  does, every predicted row for it is a false positive.
+- DOIs must be normalised to `https://doi.org/<prefix>/<suffix>`.
 
-**S5 made things worse and is not in the shipped pipeline.** The shipped
-configuration is S4. The row is kept because a measured negative result is the
-point of this table.
+The scorer ([`src/mdc/evaluate.py`](src/mdc/evaluate.py)) does **exact string
+matching and nothing else**. All normalisation lives in the prediction pipeline
+on purpose: a scorer that quietly canonicalises both sides would hide the very
+bugs S3 exists to find.
 
-All figures above are the `dev` tuning split. The honest number is the holdout
-one below, and it is much lower — see [Holdout](#holdout--the-honest-number).
+Beyond the headline number it reports per-type scores and splits false
+positives into *spurious mention* (not a citation at all) versus *wrong type*
+(mention found, Primary/Secondary call wrong) — two failures with completely
+different fixes.
 
-**Mention F1** scores `(article_id, dataset_id)` with the type dropped. S1–S3
-are purely about *finding* citations and emit a constant type, so their headline
-F1 is capped by how often that constant happens to be right. Mention F1 is the
-honest measure of extraction until S4 adds a real classifier.
+### Splits
 
-Scores are measured on the local `dev` split (418 articles, 566 gold triples),
-not the Kaggle leaderboard. `holdout` (105 articles, 153 triples) stays sealed
-until the end. S2 is broken down per repository pattern so the contribution of
-each one is visible.
+`dev` / `holdout` are **split by `article_id`, never by row**. Two citations in
+the same paper share the same full text, so a row-level split would let the
+pipeline see the answer for a paper it is then scored on. Default 80/20,
+`seed=42`. The id lists live in `splits/` and are committed, so every number in
+the table above is reproducible.
 
-The public `test/` directory holds only 25 XML / 30 PDF files — it is a format
-sample, not the real test set, which is served at rerun time. Local evaluation
-is therefore the only usable feedback loop.
+The split covers *all* labelled articles, including those with no citation —
+those true negatives are what keeps precision meaningful. It is **stratified on
+whether an article cites anything**: only 214 of 523 do, and an unstratified
+draw at seed 42 left dev at 42.1% citing against holdout's 36.2%, which would
+shift the achievable precision between the two halves. Stratified, both sit at
+40.9% / 41.0%.
+
+Every scored run is appended to [`reports/scores.jsonl`](reports/scores.jsonl)
+via `--json-out`.
 
 ## What is in the data
 
@@ -495,20 +549,76 @@ unparseable reply keeps the mention. A verifier outage costs precision, never
 recall.
 
 
+## S6 — PDF fallback (within noise)
+
+24% of the corpus has no XML — 124 of 523 labelled articles, holding 59 of dev's
+566 gold mentions and 15 of holdout's 153. `src/mdc/pdftext.py` reads those
+through pypdf and returns the **same `Segment` contract as the XML backend**, so
+nothing downstream knows which format an article arrived in. The dispatcher is
+`src/mdc/document.py`; `--pdf-fallback` turns it on and PDFs are used only where
+no XML exists.
+
+Two things the PDF backend has to get right, both tested:
+
+**Splitting off the bibliography.** S3 established that reading a reference list
+costs 11,775 false positives for 47 true mentions. A PDF has no structure to
+read that from, so the split is heuristic: the *last* line that is nothing but a
+references heading — last, not first, because the word appears in running text
+and in tables of contents.
+
+**Rejoining wrapped identifiers.** PDF line wrapping cuts DOIs in half, and
+`10.5061/dry` + `ad.abc` is not a DOI. Only runs already starting with a DOI
+prefix are rejoined, so prose is untouched.
+
+### Result
+
+| | dev F1 | dev mention F1 | holdout F1 | holdout mention F1 |
+|---|---|---|---|---|
+| S4 | 0.6392 | 0.7117 | 0.2847 | 0.5833 |
+| **S6** | **0.6498** | 0.7174 | **0.2794** | 0.5524 |
+| Δ | +0.0106 | +0.0057 | **−0.0053** | −0.0309 |
+
+**It helps on dev and hurts on holdout, and both deltas are an order of
+magnitude smaller than the ±0.10 and ±0.35 confidence intervals. This cannot be
+distinguished from zero.**
+
+What it actually did: on dev the fallback added 88 predictions, 35 of them
+correct — 39.8% precision, reaching 59.3% of the gold that sits in PDF-only
+articles, with the type right on all 35. On holdout the same code added 3 true
+mentions and 24 false ones. 33 PDF articles holding 15 gold citations is not
+enough to tell a real effect from a coin flip.
+
+So `--pdf-fallback` stays **opt-in and off by default**. The structural argument
+for it is sound — a quarter of the corpus is otherwise unreadable — but the
+measurement does not support claiming a gain, and the table should not imply one.
+
+pypdf is an optional dependency for this reason: the XML path, 76% of the
+corpus and every stage through S5, runs without it. The test suite passes in
+both environments (one PDF-specific test skips when pypdf is absent).
+
+### A note on holdout discipline
+
+Holdout has now been opened **twice**: once after S5, once for S6. Every design
+decision in S6 — the heading heuristic, the dewrap rule, reading PDFs only where
+XML is missing — was made and measured on dev, and nothing was changed after
+either holdout run. The first holdout result stands unedited above. Two
+scorings is worse than one, and the second is recorded here rather than quietly
+folded into the first.
+
 ## Holdout — the honest number
 
-Every choice in S1–S5 was made on `dev`. `holdout` was untouched until the end
-and scored once. Both are reported with 95% intervals from resampling
-**articles**, because citations inside one paper are not independent
-observations:
+Every choice in every stage above was made on `dev`. `holdout` was untouched
+until S1–S5 were finished, then scored once — the result below. (S6 came later
+and scored it a second time; that is recorded in
+[S6](#s6--pdf-fallback-within-noise) rather than folded in here.)
+
+Both splits are reported with 95% intervals from resampling **articles**,
+because citations inside one paper are not independent observations:
 
 | Split | articles (citing) | gold | F1 | 95% interval | Mention F1 |
 |---|---|---|---|---|---|
 | dev (tuned on) | 418 (171) | 566 | 0.6392 | 0.53 – 0.73 | 0.7117 |
 | **holdout (scored once)** | 105 (43) | 153 | **0.2847** | 0.12 – 0.50 | 0.5833 |
-
-S6 was measured afterwards and scored holdout a second time: F1 0.2794
-[0.13 – 0.47]. See [S6](#s6--pdf-fallback-within-noise).
 
 Per stage on holdout: S0 0.0000 · S1 0.0574 · S2 0.1384 · S3 0.2431 · S4 0.2847.
 The ordering of the stages survives; the level does not.
@@ -604,101 +714,6 @@ The measured leads, in order of evidence:
    there, since 39.8% precision on PDF-derived predictions suggests extraction
    quality, not the idea, is the limit.
 
-
-## S6 — PDF fallback (within noise)
-
-24% of the corpus has no XML — 124 of 523 labelled articles, holding 59 of dev's
-566 gold mentions and 15 of holdout's 153. `src/mdc/pdftext.py` reads those
-through pypdf and returns the **same `Segment` contract as the XML backend**, so
-nothing downstream knows which format an article arrived in. The dispatcher is
-`src/mdc/document.py`; `--pdf-fallback` turns it on and PDFs are used only where
-no XML exists.
-
-Two things the PDF backend has to get right, both tested:
-
-**Splitting off the bibliography.** S3 established that reading a reference list
-costs 11,775 false positives for 47 true mentions. A PDF has no structure to
-read that from, so the split is heuristic: the *last* line that is nothing but a
-references heading — last, not first, because the word appears in running text
-and in tables of contents.
-
-**Rejoining wrapped identifiers.** PDF line wrapping cuts DOIs in half, and
-`10.5061/dry` + `ad.abc` is not a DOI. Only runs already starting with a DOI
-prefix are rejoined, so prose is untouched.
-
-### Result
-
-| | dev F1 | dev mention F1 | holdout F1 | holdout mention F1 |
-|---|---|---|---|---|
-| S4 | 0.6392 | 0.7117 | 0.2847 | 0.5833 |
-| **S6** | **0.6498** | 0.7174 | **0.2794** | 0.5524 |
-| Δ | +0.0106 | +0.0057 | **−0.0053** | −0.0309 |
-
-**It helps on dev and hurts on holdout, and both deltas are an order of
-magnitude smaller than the ±0.10 and ±0.35 confidence intervals. This cannot be
-distinguished from zero.**
-
-What it actually did: on dev the fallback added 88 predictions, 35 of them
-correct — 39.8% precision, reaching 59.3% of the gold that sits in PDF-only
-articles, with the type right on all 35. On holdout the same code added 3 true
-mentions and 24 false ones. 33 PDF articles holding 15 gold citations is not
-enough to tell a real effect from a coin flip.
-
-So `--pdf-fallback` stays **opt-in and off by default**. The structural argument
-for it is sound — a quarter of the corpus is otherwise unreadable — but the
-measurement does not support claiming a gain, and the table should not imply one.
-
-pypdf is an optional dependency for this reason: the XML path, 76% of the
-corpus and every stage through S5, runs without it. The test suite passes in
-both environments (one PDF-specific test skips when pypdf is absent).
-
-### A note on holdout discipline
-
-Holdout has now been opened **twice**: once after S5, once for S6. Every design
-decision in S6 — the heading heuristic, the dewrap rule, reading PDFs only where
-XML is missing — was made and measured on dev, and nothing was changed after
-either holdout run. The first holdout result stands unedited above. Two
-scorings is worse than one, and the second is recorded here rather than quietly
-folded into the first.
-
-## Evaluation
-
-Micro-averaged F1 over exact `(article_id, dataset_id, type)` triples, matching
-the competition metric:
-
-- The same `(dataset_id, type)` inside one article counts once — the scorer uses
-  sets, so this is structural rather than a cleanup step.
-- An article with no data citation must not appear in the predictions. If it
-  does, every predicted row for it is a false positive.
-- DOIs must be normalised to `https://doi.org/<prefix>/<suffix>`.
-
-The scorer ([`src/mdc/evaluate.py`](src/mdc/evaluate.py)) does **exact string
-matching and nothing else**. All normalisation lives in the prediction pipeline
-on purpose: a scorer that quietly canonicalises both sides would hide the very
-bugs S3 exists to find.
-
-Beyond the headline number it reports per-type scores and splits false
-positives into *spurious mention* (not a citation at all) versus *wrong type*
-(mention found, Primary/Secondary call wrong) — two failures with completely
-different fixes.
-
-### Splits
-
-`dev` / `holdout` are **split by `article_id`, never by row**. Two citations in
-the same paper share the same full text, so a row-level split would let the
-pipeline see the answer for a paper it is then scored on. Default 80/20,
-`seed=42`. The id lists live in `splits/` and are committed, so every number in
-the table above is reproducible.
-
-The split covers *all* labelled articles, including those with no citation —
-those true negatives are what keeps precision meaningful. It is **stratified on
-whether an article cites anything**: only 214 of 523 do, and an unstratified
-draw at seed 42 left dev at 42.1% citing against holdout's 36.2%, which would
-shift the achievable precision between the two halves. Stratified, both sit at
-40.9% / 41.0%.
-
-Every scored run is appended to [`reports/scores.jsonl`](reports/scores.jsonl)
-via `--json-out`.
 
 ## Layout
 
